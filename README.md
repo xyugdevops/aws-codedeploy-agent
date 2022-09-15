@@ -1,57 +1,113 @@
-# AWS CodeDeploy Agent
+# blue-green
 
-[![Code Climate](https://codeclimate.com/github/aws/aws-codedeploy-agent.png)](https://codeclimate.com/github/aws/aws-codedeploy-agent) [![Build Status](https://travis-ci.org/aws/aws-codedeploy-agent.png?branch=master)](https://travis-ci.org/aws/aws-codedeploy-agent) [![Coverage Status](https://coveralls.io/repos/aws/aws-codedeploy-agent/badge.svg?branch=master&service=github)](https://coveralls.io/r/aws/aws-codedeploy-agent?branch=master)
 
-## Latest Release: 1.4.0
-[Release Notes](https://docs.aws.amazon.com/codedeploy/latest/userguide/codedeploy-agent.html#codedeploy-agent-version-history)
+# PFB the User-Data
 
-## Build Steps
+#!/bin/bash -xe
 
-``` ruby
-git clone https://github.com/aws/aws-codedeploy-agent.git
-gem install bundler -v 1.3.5
-cd aws-codedeploy-agent
-bundle install
-rake clean && rake
-```
+yum update -y
 
-## Starting up the CodeDeploy Agent Locally for manual testing
+# Apache install and index.html file creation
 
-`bin/codedeploy-agent start`
+yum install httpd -y
+echo 'Hello' >> /var/www/html/index.html
+systemctl restart httpd
 
-To stop it:
+## Code Deploy Agent Bootstrap Script##
 
-`bin/codedeploy-agent stop`
 
-## Integration Test
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+AUTOUPDATE=false
 
-Please do the build steps mentioned above before running the integration test.
+function installdep(){
 
-The integration test creates the following
-* An IAM role "codedeploy-agent-integ-test-deployment-role" if it doesn't exist
-* An IAM role "codedeploy-agent-integ-test-instance-role" if it doesn't exist
-* An IAM user "codedeploy-agent-integ-test-instance-user" if it doesn't exist. (Access key will be recreated.)
-* A CodeDeploy application
-* Startup the codedeploy agent on your host
-* A CodeDeploy deployment group with your host in it
-* A CodeDeploy deployment to your host.
-* Local Deployments to your host.
+if [ ${PLAT} = "ubuntu" ]; then
 
-It terminates the test ec2 instance and deletes the CodeDeploy application at the end of each test run.
-It also terminates any test ec2 instances before starting up the test.
+  apt-get -y update
+  # Satisfying even ubuntu older versions.
+  apt-get -y install jq awscli ruby2.0 || apt-get -y install jq awscli ruby
 
-Create your default aws credentials file in the default location (~/.aws/credentials on linux/mac and %USERPROFILE%.awscredentials on windows). Add your AWS access key, secret key, and optionally your session token there. The access key should have permission to create the above mentioned resources. You can also change the default region. Note that temporary credentials won't work. 
 
-Sample format of the credentials file:
 
-```
-[default]
-aws_access_key_id=<keyID>
-aws_secret_access_key=<key>
-```
+elif [ ${PLAT} = "amz" ]; then
+  yum -y update
+  yum install -y aws-cli ruby jq
 
-To run the integration test execute:
+fi
 
-```
-rake test-integration
-```
+}
+
+function platformize(){
+
+#Linux OS detection#
+ if hash lsb_release; then
+   echo "Ubuntu server OS detected"
+   export PLAT="ubuntu"
+
+
+elif hash yum; then
+  echo "Amazon Linux detected"
+  export PLAT="amz"
+
+ else
+   echo "Unsupported release"
+   exit 1
+
+ fi
+}
+
+
+function execute(){
+
+if [ ${PLAT} = "ubuntu" ]; then
+
+  cd /tmp/
+  wget https://aws-codedeploy-${REGION}.s3.amazonaws.com/latest/install
+  chmod +x ./install
+
+  if ./install auto; then
+    echo "Instalation completed"
+      if ! ${AUTOUPDATE}; then
+            echo "Disabling Auto Update"
+            sed -i '/@reboot/d' /etc/cron.d/codedeploy-agent-update
+            chattr +i /etc/cron.d/codedeploy-agent-update
+            rm -f /tmp/install
+      fi
+    exit 0
+  else
+    echo "Instalation script failed, please investigate"
+    rm -f /tmp/install
+    exit 1
+  fi
+
+elif [ ${PLAT} = "amz" ]; then
+
+  cd /tmp/
+  wget https://aws-codedeploy-${REGION}.s3.amazonaws.com/latest/install
+  chmod +x ./install
+
+    if ./install auto; then
+      echo "Instalation completed"
+        if ! ${AUTOUPDATE}; then
+            echo "Disabling auto update"
+            sed -i '/@reboot/d' /etc/cron.d/codedeploy-agent-update
+            chattr +i /etc/cron.d/codedeploy-agent-update
+            rm -f /tmp/install
+        fi
+      exit 0
+    else
+      echo "Instalation script failed, please investigate"
+      rm -f /tmp/install
+      exit 1
+    fi
+
+else
+  echo "Unsupported platform ''${PLAT}''"
+fi
+
+}
+
+platformize
+installdep
+REGION=$(curl -s 169.254.169.254/latest/dynamic/instance-identity/document | jq -r ".region")
+execute
